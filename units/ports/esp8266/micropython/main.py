@@ -1,12 +1,14 @@
 
+from uplatform import UOBJ_DIR
+
 
 def create_data_dir():
     import os
-    from uplatform import DATADIR
-    if DATADIR not in os.listdir():
-        os.mkdir(DATADIR)
+    from uplatform import UOBJ_DIR
+    if UOBJ_DIR not in os.listdir():
+        os.mkdir(UOBJ_DIR)
     del(os)
-    del(DATADIR)
+    del(UOBJ_DIR)
 
 
 def start_delay():
