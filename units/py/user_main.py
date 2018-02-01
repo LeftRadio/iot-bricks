@@ -1,137 +1,202 @@
 import gc
-from uplatform import PLATFORM, MANGER_ID, MQTT_ESP_ID, WLAN_ID
+import machine
+import time
+
+from defaults import MANGER_NAME_ID, WLAN_NAME_ID, MQTT_NAME_ID
+
+from uplatform import PLATFORM
+from uplatform import Timer
+
+from config import save, configs_delete, load, objects_files
+
 from wlan import WLAN_STA_Manager
 from mqtt import MQTTClient
-from base import objects_group
-from actuators import Actuator
-from sensors import DigitalInput, LM75, SHT21
-from scenaries import UserTimer, Thermostat
 
+import bricks
+from actuators import DigitalOut
+from sensors import DigitalInput, LM75, SHT21
+from scenaries import UserTimer, Regulator
+
+
+# -------------------------------------------------------------------------
+
+def bricks_objects_native_cb(sender, data):
+    """ Wrap callback for native Bricks objects,
+        FatalException if redefine to manager.objects_update_callback
+    """
+    manager.objects_update_callback(sender, data)
+
+
+bricks.set_callback(bricks_objects_native_cb)
+
+
+# -------------------------------------------------------------------------
 
 class ObjectManager(object):
 
     propertylist = b'binds,interval'
-    _commands = b'set,get,save,new,delete,datetime,ramfree,reset,sensors,actuators,scenaries'
+    commands = b'set,get,save,new,delete,datetime,ramfree,reset,objects,' + bytes(','.join(bricks.groups()), 'utf-8')
 
-    def __init__(self, name):
-        self._classname = self.__class__.__name__
-        self._name = name
-        self._objects = {}
-        self._binds = {}
-        self._wlan_sta_state = False
-        from uplatform import Timer
+    def __init__(self):
+        # default settings
+        self.classname = self.__class__.__name__
+        self.name = MANGER_NAME_ID
+        self.objects = {}
+        self.binds = {}
+        self.datetime = None
+        self.interval = 1
         self._gl_timer = Timer(-1)
-        del(Timer)
-        import machine
-        self._datetime = None
-        del(machine)
-        self._interval = 1
-        self.configured = False
 
-    def set_property(self, attr, value):
-        setattr(self, attr, value)
-        if attr == '_binds':
-            self.sync_binded_objects()
+        # create 'static' WLAN/MQTT objects
+        self.objects[WLAN_NAME_ID] = WLAN_STA_Manager()
+        self.objects[MQTT_NAME_ID] = MQTTClient()
+
+        # list stored settings json files for objects
+        files = objects_files()
+        # try load stored settings for itself
+        try:
+            f = files.pop(files.index(self.name))
+            self.properties( **load(f) )
+        except Exception:
+            pass
+
+        # load settings and create objects
+        for f in files:
+            try:
+                self.new_object( **load(f) )
+            except Exception:
+                pass
+
+        # set WLAN and MQTT objects specefic callbacks
+        self.objects[MQTT_NAME_ID].recived_cb = self.mqtt_recive_callback
+        self.objects[MQTT_NAME_ID].state_callback = self.mqtt_state_callback
+        self.objects[WLAN_NAME_ID].status_cb = self.wlan_status_callback
+
+        # finally update/sync binded objects
+        self.sync_binded_objects(self.binds)
+
+    def set_property(self, key, value):
+        if key[0] == '_':
+            return
+        elif key == 'binds':
+            self.sync_binded_objects(value)
+        setattr(self, key, value)
+
+    def properties(self, **kwargs):
+        if not len(kwargs):
+            return {
+                'classname': self.__class__.__name__,
+                'name': self.name,
+                'binds': self.binds,
+                'interval': self.interval
+            }
+        for k, v in kwargs.items():
+            self.set_property(k, v)
 
     def timer_init(self):
         self._gl_timer.deinit()
+        if self.interval < 0.25:
+            self.interval = 0.25
         self._gl_timer.init(
-            period=int(self._interval*1000), callback=self.update)
+            period=int(self.interval*1000), callback=self.update)
 
-    def update(self, *args, **kwargs):
-        import time
+    def update(self, timer):
+        self._gl_timer.deinit()
+        #
+        # machine.freq(160000000)
+        now = time.ticks_ms()
         seconds = time.time()
-        del(time)
-        if PLATFORM == b'mpy':
-            self._gl_timer.deinit()
+        for obj in self.objects.values():
+            obj.update(seconds, self.interval)
             gc.collect()
-            for obj in list(self._objects.values()):
-                obj.update(interval=self._interval, seconds=seconds)
-                gc.collect()
-            self.timer_init()
+        print('update ms: ', time.ticks_ms() - now)
+        # machine.freq(80000000)
+        #
+        self.timer_init()
 
     # --- commands methods ----------------------------------------------------
 
     def new_object(self, **kwargs):
         name = kwargs['name']
-        classname = kwargs['classname']
-        if gc.mem_free() < 3500:
-            raise KeyError('no more memory')
-        self._objects[name] = globals()[classname](**kwargs)
-        self._objects[name].init()
+        classname = kwargs.pop('classname')
+        gc.collect()
+        if gc.mem_free() < 4000:
+            raise MemoryError
+        self.objects[name] = globals()[classname](**kwargs)
+        self.objects[name].init()
 
     def delete_object(self, data):
-        from config import config_delete
         if data == 'all':
-            namelist = [k for k in self._objects.keys() if k != MQTT_ESP_ID]
-            self._binds = {}
+            namelist = objects_files()
+            self.objects.clear()
         else:
             namelist = data.split(',')
-        [ self._objects.pop(n) for n in namelist ]
-        config_delete(namelist)
+            [ self.objects.pop(n) for n in namelist ]
+        configs_delete(namelist)
 
-    def sync_binded_objects(self):
-        from config import config_get, save
-        intents = ','.join(list(self._binds.values()))
-        for obj in self._objects.values():
-            if '_binded' not in obj.__dict__:
+    def sync_binded_objects(self, binds):
+
+        intents = ';'.join(list(binds.values()))
+
+        for obj in self.objects.values():
+            p = obj.properties()
+            if 'binded' not in p:
                 continue
-            if obj._name in intents:
-                if obj._binded:
+            name = obj.name()
+            if name in intents:
+                if p['binded']:
                     continue
-                obj._binded = True
-            elif obj._binded:
-                obj._binded = False
+                p['binded'] = True
+            elif p['binded']:
+                p['binded'] = False
             else:
                 continue
-            save(obj._name, config_get(obj))
+            save(obj.name(), p)
 
     # --- callbacks -----------------------------------------------------------
 
-    def objects_update_callback(self, sender, key, **kwargs):
-        for src, recivers in self._binds.items():
-            if sender._name != src or type(recivers) != str:
+    def objects_update_callback(self, sender, data):
+        #
+        name = sender.name()
+
+        for src, recivers in self.binds.items():
+            if name != src:
                 continue
             for recv in recivers.split(','):
                 try:
-                    self._objects[recv].update_slot(sender, key, **kwargs)
-                except Exception:
+                    self.objects[recv].update_slot(sender, data)
+                except Exception as e:
                     pass
-        group = 'undef'
-        for k, v in objects_group.items():
-            if sender.__class__.__name__ in v:
-                group = k
-                break
-        self._objects[MQTT_ESP_ID].publish( group+'/'+sender._name, kwargs )
+                gc.collect()
+
+        self.objects[MQTT_NAME_ID].publish( '%s/%s' % (sender.group(), name), data )
 
     def mqtt_recive_callback(self, recivername, command, data):
-        reciver = None
-        if recivername == self._name:
+
+        if recivername == self.name:
             reciver = self
-        elif recivername in self._objects.keys():
-            reciver = self._objects[recivername]
+        elif recivername in self.objects.keys():
+            reciver = self.objects[recivername]
         else:
             return
 
-        res_data = 'OK'
+        res_data = b'OK'
 
         try:
             cmdb = bytes(command, 'utf-8')
-            assert cmdb in ObjectManager._commands
+            assert cmdb in ObjectManager.commands
 
             if cmdb == b'set':
-                from config import config_apply
-                config_apply( reciver, data )
+                reciver.properties(**data)
 
             elif cmdb == b'get':
-                from config import config_get
-                res_data = config_get(reciver)
+                res_data = reciver.properties()
 
             elif cmdb == b'save':
-                from config import config_get, save
-                save(recivername, config_get(reciver))
+                save(recivername, reciver.properties())
                 if reciver == self and data == 'all':
-                    [save(k, config_get(v)) for k, v in self._objects.items()]
+                    for k, v in self.objects.items():
+                        save(k, v.properties())
 
             elif reciver == self:
                 if cmdb == b'new':
@@ -149,18 +214,18 @@ class ObjectManager(object):
                         import time
                         res_data = {'datetime': time.localtime()}
                     else:
-                        import machine
                         machine.RTC().datetime(tuple(data))
 
+                elif cmdb == b'objects':
+                    res_data = { command: list(self.objects.keys()) }
+
+                elif command in bricks.groups():
+                    objlist = [ k for k,v in self.objects.items() if v.group() == command ]
+                    res_data = { command: objlist }
+
                 elif cmdb == b'reset':
-                    import machine
                     machine.reset()
 
-                elif command in objects_group.keys():
-                    res_data = { command: [] }
-                    for k, v in self._objects.items():
-                        if v.__class__.__name__ in objects_group[command]:
-                            res_data[command].append(k)
             else:
                 raise KeyError(b'command not supported')
         except AssertionError as e:
@@ -168,88 +233,38 @@ class ObjectManager(object):
         except KeyError as e:
             res_data = { 'KeyError': (str(e)).encode('utf-8') }
 
-        self._objects[MQTT_ESP_ID].publish(recivername, res_data)
+        self.objects[MQTT_NAME_ID].publish(recivername, res_data)
 
     def mqtt_state_callback(self, state):
-        mqtt = manager._objects[MQTT_ESP_ID]
-        print(b'mqtt_state_callback in: ', mqtt._alt_settings[mqtt._alt_index], mqtt.state)
+        mqtt = self.objects[MQTT_NAME_ID]
+        print(b'mqtt_state_callback: ', mqtt.alt_settings[mqtt.alt_index], state)
         if state == b'server_lost':
             # if wlan object status is STAT_GOT_IP
-            if manager._objects[WLAN_ID].itf.status() == 5:
-                mqtt.set_property('_alt_index', mqtt._alt_index + 1)
+            if self.objects[WLAN_NAME_ID].itf.status() == 5:
+                mqtt.set_property('alt_index', mqtt.alt_index + 1)
                 mqtt.state = b'reset'
 
     def wlan_status_callback(self, status):
-        # verify if new status != STAT_GOT_IP
-        if status != 5:
-            manager._objects[MQTT_ESP_ID].state = b'server_lost'
-        else:
-            manager._objects[MQTT_ESP_ID].state = b'reset'
+        wlan = self.objects[WLAN_NAME_ID]
+        mqtt = self.objects[MQTT_NAME_ID]
+        print(b'wlan_status_callback: ', status)
+        if status < 5:
+            if status > 1:
+                wlan.set_property('alt_index', wlan.alt_index + 1)
+            mqtt.state = b'server_lost'
+        elif status == 5:
+            mqtt.state = b'reset'
 
 
 # -------------------------------------------------------------------------
 
 
-def manager_load(manager):
-    from config import config_apply, load, objects_files
-    from base import BrickBase
-    gc.collect()
-
-    try:
-        config_apply( manager, load(MANGER_ID) )
-    except Exception:
-        pass
-
-    try:
-        mqttconf = load(MQTT_ESP_ID)
-    except Exception:
-        # alt_settings = ['iot-bricks-server.local,,', 'iot.eclipse.org,1883,,', '192.168.4.111,1883,test,test']
-        alt_settings = ['iot-bricks-server.local,1883,test,test', 'Aspire-4315.local,1883,test,test']
-        mqttconf = {'classname': 'MQTTClient', 'name': MQTT_ESP_ID, 'alt_settings': alt_settings, 'keepalive': 60}
-    manager.new_object( **mqttconf )
-
-    try:
-        wlanconf = load(WLAN_ID)
-    except Exception:
-        alt_settings = ['IOT-BRICKS-CONFIG,1234root1234', 'NeilLab,statemachine-UX7']
-        wlanconf = {'classname': 'WLAN_STA_Manager', 'name': WLAN_ID, 'alt_settings': alt_settings, 'timeout': 15}
-    manager.new_object( **wlanconf )
-
-    try:
-        files = objects_files(skipfltr='%s,%s' % (MANGER_ID, MQTT_ESP_ID))
-        for f in files:
-            gc.collect()
-            try:
-                manager.new_object( **load(f) )
-            except Exception:
-                pass
-    except AssertionError:
-        pass
-
-    BrickBase.update_cb = manager.objects_update_callback
-    del(BrickBase)
-
-    manager._objects[MQTT_ESP_ID].recived_cb = manager.mqtt_recive_callback
-    manager._objects[MQTT_ESP_ID].state_cb = manager.mqtt_state_callback
-
-    manager._objects[WLAN_ID].status_cb = manager.wlan_status_callback
-
-    manager.configured = True
-    return manager
-
-
-# -------------------------------------------------------------------------
-
-
-manager = manager_load( ObjectManager(name=MANGER_ID) )
-del(manager_load)
-
-manager.sync_binded_objects()
+manager = ObjectManager()
 
 if PLATFORM == b'mpy':
     manager.timer_init()
 else:
     from time import sleep
-    while 1:
-        sleep(1)
+    while True:
+        sleep(manager.interval)
         manager.update()

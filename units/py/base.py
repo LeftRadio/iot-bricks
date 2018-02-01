@@ -1,10 +1,3 @@
-#
-
-objects_group = {
-    'sensors': b'LM75,SHT21,DigitalInput,AnalogInput',
-    'actuators': b'Actuator,Latch,PWM',
-    'scenaries': b'UserTimer,Thermostat'
-}
 
 
 class BrickBase(object):
@@ -12,19 +5,21 @@ class BrickBase(object):
     update_cb = None
 
     def __init__(self, **kwargs):
-        self._name = kwargs['name']
-        self._enable = kwargs.get('enable', False)
-        self._binded = kwargs.get('binded', False)
-        if self._binded:
-            self._out_state = False
+        self.name = kwargs['name']
+        self.enable = kwargs.get('enable', False)
+        self.binded = kwargs.get('binded', False)
+        if self.binded:
+            self.out_state = False
         else:
-            self._out_state = kwargs.get('out_state', False)
+            self.out_state = kwargs.get('out_state', False)
 
-    def set_property(self, attr, value):
-        setattr(self, attr, value)
+    def set_property(self, key, value):
+        if key[0] == '_':
+            return
+        setattr(self, key, value)
 
     def init(self):
         pass
 
-    def update_slot(self, sender, key, **kwargs):
+    def update_slot(self, sender, data):
         pass

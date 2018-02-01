@@ -7,98 +7,83 @@ class UserTimer(BrickBase):
 
     def __init__(self, **kwargs):
         super(UserTimer, self).__init__(**kwargs)
-        self._start = kwargs.get('start', -1)
-        self._on = kwargs.get('on', 0)
-        self._off = kwargs.get('off', 0)
-        self._period = kwargs.get('period', 0)
+        self.start = kwargs.get('start', -1)
+        self.on = kwargs.get('on', 0)
+        self.off = kwargs.get('off', 0)
+        self.period = kwargs.get('period', 0)
 
-    def update(self, **kwargs):
-        seconds = kwargs.get('seconds', -1)
-        interval = kwargs.get('interval', 1)
+    def update(self, seconds, interval):
 
-        newstate = self._out_state
+        newstate = self.out_state
 
-        if self._enable and seconds != -1:
-            if self._start == -1:
-                self._start = seconds
-            tdelta = seconds - self._start
+        if self.enable and seconds != -1:
+            if self.start == -1:
+                self.start = seconds
+            tdelta = seconds - self.start
             if tdelta < 0:
-                tdelta += self._period
-            if tdelta >= self._period - interval:
-                self._start = seconds + interval
+                tdelta += self.period
+            if tdelta >= self.period - interval:
+                self.start = seconds + interval
             # on = 12:00, off = 13:00
-            if self._off >= self._on:
-                if self._off <= tdelta:
+            if self.off >= self.on:
+                if self.off <= tdelta:
                     newstate = False
-                elif self._on <= tdelta:
+                elif self.on <= tdelta:
                     newstate = True
                 else:
                     newstate = False
             # on = 13:00, off = 7:00
             else:
-                if self._on <= tdelta:
+                if self.on <= tdelta:
                     newstate = True
-                elif self._on >= tdelta and self._off <= tdelta:
+                elif self.on >= tdelta and self.off <= tdelta:
                     newstate = False
-                elif self._off >= tdelta:
+                elif self.off >= tdelta:
                     newstate = True
                 else:
                     newstate = False
         else:
-            self._start = -1
+            self.start = -1
             newstate = False
 
-        if self._out_state == newstate:
+        if self.out_state == newstate:
             return
 
-        self._out_state = newstate
-        BrickBase.update_cb(self, 'update', out_state=self._out_state)
+        self.out_state = newstate
+        BrickBase.update_cb(self, self.out_state)
 
-    def update_slot(self, sender, key, **kwargs):
-        self._enable = kwargs.get('out_state', self._enable)
+    def update_slot(self, sender, data):
+        self.enable = True if data else False
 
 
 class Thermostat(BrickBase):
-    propertylist = b'enable,intent,hys,mode,binded'
+
+    propertylist = b'enable,intent,hys,inverted,binded'
 
     def __init__(self, **kwargs):
         super(Thermostat, self).__init__(**kwargs)
-        self._sourse_data = 0
-        self._intent = kwargs.get('intent', -1)
-        self._hys = kwargs.get('hys', 0)
-        self._mode = kwargs.get('mode', 'heater')
-        self._source_online = False
+        self.intent = kwargs.get('intent', -1)
+        self.hys = kwargs.get('hys', 0)
+        self.inverted = kwargs.get('inverted', False)
+        self._sourse_data = -65535
 
-    def update(self, **kwargs):
-        if self._enable and self._source_online:
-
-            low_intent = self._intent - self._hys
-            hight_intent = self._intent + self._hys
-
-            if self._out_state:
-                sth = ( self._mode in 'heater humidifier' and self._sourse_data >= hight_intent )
-                stc = ( self._mode in 'cooler dryin' and self._sourse_data <= low_intent )
+    def update(self, seconds, interval):
+        if self.enable:
+            low_intent = self.intent - self.hys
+            hight_intent = self.intent + self.hys
+            if self.out_state:
+                change_state = ( self._sourse_data >= hight_intent )
             else:
-                sth = ( self._mode in 'heater humidifier' and self._sourse_data <= low_intent )
-                stc = ( self._mode in 'cooler dryin' and self._sourse_data >= hight_intent )
-            if sth or stc:
-                self._out_state = False if self._out_state else True
+                change_state = ( self._sourse_data <= low_intent )
+            if not change_state:
+                return
+            self.out_state ^= change_state
+        else:
+            if self.out_state:
+                self.out_state = False
             else:
                 return
-        else:
-            if self._out_state:
-                self._out_state = False
-            else:
-                return
-        BrickBase.update_cb(self, 'update', out_state=self._out_state)
+        BrickBase.update_cb(self, bool(self.out_state ^ self.inverted))
 
-    def update_slot(self, sender, key, **kwargs):
-        self._enable = kwargs.get('out_state', self._enable)
-        #
-        self._source_online = kwargs['online']
-        if self._mode in 'heater cooler':
-            self._sourse_data = kwargs['temp']
-        elif self._mode in 'humidifier dryin':
-            self._sourse_data = kwargs['humidity']
-        else:
-            return
+    def update_slot(self, sender, data):
+        self._sourse_data = data

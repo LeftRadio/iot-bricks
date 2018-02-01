@@ -38,11 +38,3 @@ elif PLATFORM == b'python3':
 
 else:
     raise Exception(b'Platform [ %b ] invalid!' % PLATFORM )
-
-
-#
-PROP_VER = const(102)
-#
-MANGER_ID = 'manager'
-WLAN_ID = 'wlan'
-MQTT_ESP_ID = 'iot_brick_esp_' + '.'.join([str(b) for b in unique_id()])

@@ -1,8 +1,8 @@
-#
 
 from uplatform import WLAN, STA_IF, AP_IF
 from uplatform import ( STAT_IDLE, STAT_CONNECTING, STAT_WRONG_PASSWORD,
                         STAT_NO_AP_FOUND, STAT_CONNECT_FAIL, STAT_GOT_IP )
+from defaults import WLAN_NAME_ID, WLAN_SETTINGS
 
 
 class WLAN_STA_Manager(object):
@@ -10,40 +10,49 @@ class WLAN_STA_Manager(object):
     propertylist = b'alt_settings,alt_index,timeout'
 
     def __init__(self, **kwargs):
-        self._name = kwargs['name']
 
-        self._alt_settings = kwargs.get('alt_settings', ['SSID,PSWD'])
-        assert len(self._alt_settings), 'no settings'
-        self._alt_index = kwargs.get('alt_index', 0)
+        self.name = kwargs.get('name', WLAN_NAME_ID)
+        self.alt_settings = kwargs.get('alt_settings', WLAN_SETTINGS)
+        self.alt_index = kwargs.get('alt_index', 0)
 
-        self._timeout = kwargs.get('timeout', 30)
+        self.timeout = kwargs.get('timeout', 10)
         self._time_cnt = -1
 
-        self._auto_switch_config = True
+        self.auto_switch_config = True
 
         apwlan = WLAN(AP_IF)
         apwlan.active(False)
 
         self.itf = WLAN(STA_IF)
         self.itf.active(True)
-        self.status = self.itf.status()
-        self.status_cb = lambda x: x
 
-        self._reset = False
+        self.status = STAT_IDLE
+        self.status_cb = None
 
-    def set_property(self, attr, value):
-        if attr == 'status':
-            if self.status != value:
-                setattr(self, attr, value)
-                self.status_cb(value)
-            return
-        elif attr == '_alt_index':
-            if value >= len(self._alt_settings):
-                value = 0
-        elif attr == '_reset':
+    def group(self):
+        return None
+
+    def properties(self, **kwargs):
+        if not len(kwargs):
+            return {
+                'classname': self.__class__.__name__,
+                'name': self.name,
+                'alt_index': self.alt_index,
+                'alt_settings': self.alt_settings,
+                'timeout': self.timeout
+            }
+        for k, v in kwargs.items():
+            self.set_property(k, v)
+
+    def set_property(self, key, value):
+        if key == 'status' and self.status != value and self.status_cb:
+            self.status_cb(value)
+        elif key == 'alt_index' and value >= len(self.alt_settings):
+            value = 0
+        elif key == 'reset':
             self.reset()
-            value = False
-        setattr(self, attr, value)
+            return
+        setattr(self, key, value)
 
     def init(self):
         pass
@@ -55,28 +64,26 @@ class WLAN_STA_Manager(object):
             pass
         self.itf.active(False)
         self.itf.active(True)
+        self._time_cnt == -1
 
-    def update(self, *args, **kwargs):
-        seconds = kwargs.get('seconds', -1)
+    def update(self, seconds, interval):
         st = self.itf.status()
 
         try:
             if st == STAT_GOT_IP or st == STAT_CONNECTING:
                 pass
             elif st == STAT_IDLE:
-                ssid, pswd = self._alt_settings[self._alt_index].split(',')
+                ssid, pswd = self.alt_settings[self.alt_index].split(',')
                 self.itf.connect(ssid, pswd)
             else:
                 assert st != STAT_WRONG_PASSWORD
                 assert st != STAT_NO_AP_FOUND
                 assert st != STAT_CONNECT_FAIL
+
         except Exception:
             if self._time_cnt == -1:
                 self._time_cnt = seconds
-            if seconds - self._time_cnt >= self._timeout:
-                self._time_cnt = -1
+            if seconds - self._time_cnt >= self.timeout:
                 self.reset()
-                if self._auto_switch_config:
-                    self.set_property('_alt_index', self._alt_index + 1)
 
         self.set_property('status', st)
