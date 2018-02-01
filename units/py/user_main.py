@@ -1,5 +1,6 @@
 import gc
-from uplatform import MICROPYTHON, MANGER_ID, MQTT_ESP_ID
+from uplatform import PLATFORM, MANGER_ID, MQTT_ESP_ID, WLAN_ID
+from wlan import WLAN_STA_Manager
 from mqtt import MQTTClient
 from base import objects_group
 from actuators import Actuator
@@ -41,14 +42,8 @@ class ObjectManager(object):
         import time
         seconds = time.time()
         del(time)
-        if MICROPYTHON:
+        if PLATFORM == b'mpy':
             self._gl_timer.deinit()
-            from network import WLAN, STA_IF
-            wl = WLAN(STA_IF)
-            if not wl.isconnected() or self._objects[MQTT_ESP_ID].state == b'server_lost':
-                import machine
-                machine.reset()
-            del(wl)
             gc.collect()
             for obj in list(self._objects.values()):
                 obj.update(interval=self._interval, seconds=seconds)
@@ -102,7 +97,7 @@ class ObjectManager(object):
                     self._objects[recv].update_slot(sender, key, **kwargs)
                 except Exception:
                     pass
-        group = ''
+        group = 'undef'
         for k, v in objects_group.items():
             if sender.__class__.__name__ in v:
                 group = k
@@ -175,6 +170,22 @@ class ObjectManager(object):
 
         self._objects[MQTT_ESP_ID].publish(recivername, res_data)
 
+    def mqtt_state_callback(self, state):
+        mqtt = manager._objects[MQTT_ESP_ID]
+        print(b'mqtt_state_callback in: ', mqtt._alt_settings[mqtt._alt_index], mqtt.state)
+        if state == b'server_lost':
+            # if wlan object status is STAT_GOT_IP
+            if manager._objects[WLAN_ID].itf.status() == 5:
+                mqtt.set_property('_alt_index', mqtt._alt_index + 1)
+                mqtt.state = b'reset'
+
+    def wlan_status_callback(self, status):
+        # verify if new status != STAT_GOT_IP
+        if status != 5:
+            manager._objects[MQTT_ESP_ID].state = b'server_lost'
+        else:
+            manager._objects[MQTT_ESP_ID].state = b'reset'
+
 
 # -------------------------------------------------------------------------
 
@@ -183,15 +194,27 @@ def manager_load(manager):
     from config import config_apply, load, objects_files
     from base import BrickBase
     gc.collect()
+
     try:
         config_apply( manager, load(MANGER_ID) )
     except Exception:
         pass
+
     try:
         mqttconf = load(MQTT_ESP_ID)
     except Exception:
-        mqttconf = {'classname': 'MQTTClient', 'name': MQTT_ESP_ID, 'server': '192.168.0.103', 'keepalive': 60}
+        # alt_settings = ['iot-bricks-server.local,,', 'iot.eclipse.org,1883,,', '192.168.4.111,1883,test,test']
+        alt_settings = ['iot-bricks-server.local,1883,test,test', 'Aspire-4315.local,1883,test,test']
+        mqttconf = {'classname': 'MQTTClient', 'name': MQTT_ESP_ID, 'alt_settings': alt_settings, 'keepalive': 60}
     manager.new_object( **mqttconf )
+
+    try:
+        wlanconf = load(WLAN_ID)
+    except Exception:
+        alt_settings = ['IOT-BRICKS-CONFIG,1234root1234', 'NeilLab,statemachine-UX7']
+        wlanconf = {'classname': 'WLAN_STA_Manager', 'name': WLAN_ID, 'alt_settings': alt_settings, 'timeout': 15}
+    manager.new_object( **wlanconf )
+
     try:
         files = objects_files(skipfltr='%s,%s' % (MANGER_ID, MQTT_ESP_ID))
         for f in files:
@@ -204,8 +227,12 @@ def manager_load(manager):
         pass
 
     BrickBase.update_cb = manager.objects_update_callback
-    manager._objects[MQTT_ESP_ID].recived_cb = manager.mqtt_recive_callback
     del(BrickBase)
+
+    manager._objects[MQTT_ESP_ID].recived_cb = manager.mqtt_recive_callback
+    manager._objects[MQTT_ESP_ID].state_cb = manager.mqtt_state_callback
+
+    manager._objects[WLAN_ID].status_cb = manager.wlan_status_callback
 
     manager.configured = True
     return manager
@@ -219,7 +246,7 @@ del(manager_load)
 
 manager.sync_binded_objects()
 
-if MICROPYTHON:
+if PLATFORM == b'mpy':
     manager.timer_init()
 else:
     from time import sleep

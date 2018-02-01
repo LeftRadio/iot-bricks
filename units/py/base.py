@@ -2,7 +2,7 @@
 
 objects_group = {
     'sensors': b'LM75,SHT21,DigitalInput,AnalogInput',
-    'actuators': b'Actuator',
+    'actuators': b'Actuator,Latch,PWM',
     'scenaries': b'UserTimer,Thermostat'
 }
 

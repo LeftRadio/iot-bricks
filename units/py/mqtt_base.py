@@ -1,6 +1,7 @@
 
 import ustruct as struct
 import usocket as socket
+from bmdns import get_server_ip as get_localserver
 
 
 class MQTTClientBase(object):
@@ -13,12 +14,10 @@ class MQTTClientBase(object):
         self._lw_qos = 0
         self._lw_retain = False
 
-        self._server = kwargs.get('server', None)
-        self._port = kwargs.get('port', 1883)
-        self._user = kwargs.get('user', 'test')
-        self._pswd = kwargs.get('pswd', 'test')
-        self._keepalive = kwargs.get('keepalive', 60)
+        self._alt_settings = kwargs.get('alt_settings', [])
+        self._alt_index = kwargs.get('alt_index', 0)
 
+        self._keepalive = kwargs.get('keepalive', 60)
         self._ssl = kwargs.get('ssl', False)
         self._ssl_params = kwargs.get('ssl_params', {})
 
@@ -61,7 +60,12 @@ class MQTTClientBase(object):
         self._lw_retain = retain
 
     def connect(self, timeout=1, clean_session=True):
-        addr_info = socket.getaddrinfo(self._server, self._port)[0][-1]
+        assert len(self._alt_settings)
+        serv, port, user, pswd = self._alt_settings[self._alt_index].split(',')
+        if serv.endswith('.local'):
+            serv = get_localserver(serv, timeout=timeout)
+            assert serv is not None
+        addr_info = socket.getaddrinfo(serv, int(port))[0][-1]
         self._sock = socket.socket()
         self._sock.settimeout(timeout)
         self._sock.connect(addr_info)
@@ -71,8 +75,8 @@ class MQTTClientBase(object):
         msg = bytearray(b'\x10\x00\x00\x04MQTT\x04\x02\x00\x00')
         msg[1] = 10 + 2 + len(self._name)
         msg[9] = clean_session << 1
-        if self._user is not None:
-            msg[1] += 2 + len(self._user) + 2 + len(self._pswd)
+        if user:
+            msg[1] += 2 + len(user) + 2 + len(pswd)
             msg[9] |= (0x03) << 6
         if self._keepalive:
             assert self._keepalive < 65536
@@ -87,9 +91,9 @@ class MQTTClientBase(object):
         if self._lw_topic:
             self._send_str(self._lw_topic)
             self._send_str(self._lw_msg)
-        if self._user is not None:
-            self._send_str(self._user)
-            self._send_str(self._pswd)
+        if user:
+            self._send_str(user)
+            self._send_str(pswd)
         resp = self._recive(4)
         if resp is None or not len(resp):
             raise OSError(-1)
@@ -189,7 +193,6 @@ class MQTTClientBase(object):
         msg = self._recive(sz)
         if op & 6 == 2:
             pkt = bytearray([0x40, 0x02, 0x00, 0x00])
-            # pkt = bytearray(b'\x40\x02\x00\x00')
             struct.pack_into('!H', pkt, 2, pid)
             self._sock.write(pkt)
         elif op & 6 == 4:

@@ -1,6 +1,6 @@
 
 from base import BrickBase
-from uplatform import I2C, Pin
+from uplatform import I2C, Pin, ADC
 
 
 class DigitalInput(BrickBase):
@@ -10,13 +10,14 @@ class DigitalInput(BrickBase):
         super(BrickBase, self).__init__(**kwargs)
         self._out_state = bool(kwargs.get('value', 1) ^ 0x01)
         self._pin_index = kwargs.get('pin_index', 0)
+        self._pin_mode = kwargs.get('pin_mode', Pin.IN)
         self._pin = None
         self.set_property('_pin_index', self._pin_index)
 
     def set_property(self, attr, value):
         super().set_property(attr, value)
         if attr == '_pin_index':
-            self._pin = Pin(self._pin_index, Pin.IN, self._out_state)
+            self._pin = Pin(self._pin_index, self._pin_mode, self._out_state)
 
     def update(self, **kwargs):
         if self._enable:
@@ -27,6 +28,32 @@ class DigitalInput(BrickBase):
         else:
             return
         BrickBase.update_cb(self, 'update', out_state=self._out_state)
+
+
+class AnalogInput(BrickBase):
+    propertylist = b'enable,pin_index'
+
+    def __init__(self, **kwargs):
+        super(BrickBase, self).__init__(**kwargs)
+        self._out_state = None
+        self._pin_index = kwargs.get('pin_index', 0)
+        self._value = -1
+        self.set_property('_pin_index', self._pin_index)
+
+    def set_property(self, attr, value):
+        super().set_property(attr, value)
+        if attr == '_pin_index':
+            self._adc = ADC(self.value)
+
+    def update(self, **kwargs):
+        if self._enable:
+            newval = self._adc.read()
+            if self._value == newval:
+                return
+            self._value = newval
+        else:
+            return
+        BrickBase.update_cb(self, 'update', analog=self._value)
 
 
 class LM75(BrickBase):

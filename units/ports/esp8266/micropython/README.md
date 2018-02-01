@@ -1,32 +1,35 @@
-# iot-brick-esp micropython port
 
-# micropython 1.9.3 build with integrated iot-bricks modules
+## iot-brick port for ESP8266
+### based on micropython 1.9.3 fork - https://github.com/LeftRadio/micropython
 
-Install dependiens:
+Install Dependencies
+--------------------
+```bash
+$ sudo apt install git python3 python3-pip python3-pyqt5 python3-pyqt5.qtserialport
+$ sudo pip3 install esptool pyesp
+```
 
-> sudo apt install python3 pyesp git
+Clone iot-bricks repository
+---------------------------
+```bash
+$ cd ~
+$ git clone https://github.com/LeftRadio/iot-bricks
+```
 
-Get this repository:
+Then go to ESP8266 port folder, power-up ESP board in BOOT mode and erase/programm flash on board:
+```bash
+$ cd ~/iot-bricks/units/ports/esp8266/micropython
+$ esptool.py --port PORT erase_flash
+$ esptool.py --port PORT --baud 460800 write_flash --flash_size=detect 0 iot-bricks-mpy193.bin
+```
+Edit "/iot-bricks/units/py/defaults.py" file, set serial number as sha256 checksum, option set default WiFi AP and MQTT servers.
 
-> git clone https://github.com/LeftRadio/iot-bricks
+OK, now re-power board in NORMAL mode and write next files:
+```bash
+$ pyesp --platform MPY --command filewrite --files "boot.py,main.py"
+$ cd ../../../py
+$ pyesp -p MPY -c filewrite -f "defaults.py,uplatform.py"
+```
 
-Go to ESP8266 port folder:
+Reset ESP, Done! You heave complite iot-brick module (::)
 
-> cd /iot-brick/units/ports/esp8266/micropython
-
-Power-up ESP board in BOOT mode and execute:
-
-> python3 ./utils/esptool.py --port PORT --baud 115200 erase_flash
-
-RePower board in BOOT mode and write firmware:
-
-> python3 ./utils/esptool.py --port PORT --baud 115200 write_flash --flash_size=detect 0 ./firmware/iot-bricks-mpy193.bin
-
-#
-
-RePower board in NORMAL mode and execute:
-
-> pyesp --write_files -f "./src/boot.py,./src/main.py,../../../src/user_main.py,../../../src/uplatform.py"
-
-
-Againe reset ESP, Done! You heave iot-brick module (::)
